@@ -55,7 +55,7 @@ class Scribble(object):
     open_logs = {}
     invalid_logs = {}
 
-    def __init__(self, host, port, config, interval):
+    def __init__(self, host, port, config, interval, chunk_size):
         self.config = config
         self.interval = interval
         self.reload_config = False
@@ -70,6 +70,12 @@ class Scribble(object):
             strictWrite=False,
         )
         self.client = scribe.Client(iprot=protocol, oprot=protocol)
+        self.chunk_size = chunk_size
+
+        # a chunk size of zero (or negative, just in case)  means no reading
+        # in chunks, which needs to be translated to -1 for the read() call.
+        if self.chunk_size <= 0:   
+            self.chunk_size = -1
 
     def stop(self, signum, frame):
         self.runnable = False
@@ -164,7 +170,7 @@ class Scribble(object):
                         self.send_internal_log_entry('unable to open log, ' + path)
                     continue
 
-            message = fd.read()
+            message = fd.read(self.chunk_size)
             if message != '':
                 self.send_log_entry(category, message)
 
@@ -261,9 +267,17 @@ if __name__ == '__main__':
         help='The group ID to switch the process to on daemon start.',
         metavar='GROUP',
     )
+    parser.add_option(
+        '--chunk-size',
+        type='int',
+        default=10485760,   # 10MB
+        dest='chunk_size',
+        help='The amount of each log file to read in each pass (0 to disable chunking and read the entire file).',
+        metavar='CHUNK_SIZE',
+    )
     options, args = parser.parse_args()
 
-    scribble = Scribble(options.host, options.port, options.config, options.interval)
+    scribble = Scribble(options.host, options.port, options.config, options.interval, options.chunk_size)
 
     if options.daemonize:
 

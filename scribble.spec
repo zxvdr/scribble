@@ -1,5 +1,5 @@
 Name:           scribble
-Version:        0.2
+Version:        0.3
 Release:        1%{?dist}
 Summary:        Daemon that sends log files to a Scribe log server
 
