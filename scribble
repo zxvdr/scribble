@@ -35,6 +35,7 @@ import signal
 import daemon
 import lockfile
 import traceback
+import syslog
 from pwd import getpwnam
 from grp import getgrnam
 from thrift.transport import TTransport
@@ -45,6 +46,8 @@ from scribe import scribe
 
 # maximum time (in seconds) to wait for Scribe
 TRY_LATER_TIMEOUT = 256
+SYSLOG_FACILITY = syslog.LOG_LOCAL0
+
 
 class Error(Exception): pass
 class FileError(Error): pass
@@ -55,7 +58,7 @@ class Scribble(object):
     open_logs = {}
     invalid_logs = {}
 
-    def __init__(self, host, port, config, interval):
+    def __init__(self, host, port, config, interval, chunk_size):
         self.config = config
         self.interval = interval
         self.reload_config = False
@@ -70,6 +73,12 @@ class Scribble(object):
             strictWrite=False,
         )
         self.client = scribe.Client(iprot=protocol, oprot=protocol)
+        self.chunk_size = chunk_size
+
+        # a chunk size of zero (or negative, just in case)  means no reading
+        # in chunks, which needs to be translated to -1 for the read() call.
+        if self.chunk_size <= 0:   
+            self.chunk_size = -1
 
     def stop(self, signum, frame):
         self.runnable = False
@@ -123,13 +132,14 @@ class Scribble(object):
         return fd, real_path, inode
 
     def send_internal_log_entry(self, message):
-        log_entry = time.strftime(self.internal_log_format, time.localtime(time.time())) + message + '\n'
+        log_entry = time.strftime(self.internal_log_format, time.localtime(time.time())) + message
         self.send_log_entry('scribble', log_entry)
 
     def send_log_entry(self, category, message, backoff=2):
         log_entry = scribe.LogEntry(
             category=category,
-            message=message.rstrip()
+            # Note: very important that we have a newline at the end of the message, after stripping extraneous whitespace!
+            message=message.rstrip() + '\n'
         )
         result = self.client.Log(messages=[log_entry])
 
@@ -164,7 +174,8 @@ class Scribble(object):
                         self.send_internal_log_entry('unable to open log, ' + path)
                     continue
 
-            message = fd.read()
+            message = fd.read(self.chunk_size)
+            syslog.syslog(SYSLOG_FACILITY | syslog.LOG_DEBUG, 'Read %d bytes to pos %d from %s' % (len(message), fd.tell(), real_path))
             if message != '':
                 self.send_log_entry(category, message)
 
@@ -176,6 +187,7 @@ class Scribble(object):
                 self.open_logs[log] = (fd, real_path, inode)
 
     def start(self):
+        syslog.openlog('scribble')
         if self.logs is None:
             self.send_internal_log_entry('invalid config file: ' + self.logs)
             raise Exception()
@@ -190,7 +202,8 @@ class Scribble(object):
         except KeyboardInterrupt:
             pass
         except (Error, TTransportException), error:
-            print >> sys.stderr, error
+            stack_trace = traceback.format_exc()
+            syslog.syslog(SYSLOG_FACILITY | syslog.LOG_ERR, 'Transport error: %s' % (stack_trace))
         try:
             stack_trace = traceback.format_exc()
             # FIXME: don't send KeyboardInterrupt's (^C)
@@ -261,9 +274,17 @@ if __name__ == '__main__':
         help='The file which will contain the process ID on daemon start.',
         metavar='PIDFILE',
     )
+    parser.add_option(
+        '--chunk-size',
+        type='int',
+        default=10485760,   # 10MB
+        dest='chunk_size',
+        help='The amount of each log file to read in each pass (0 to disable chunking and read the entire file).',
+        metavar='CHUNK_SIZE',
+    )
     options, args = parser.parse_args()
 
-    scribble = Scribble(options.host, options.port, options.config, options.interval)
+    scribble = Scribble(options.host, options.port, options.config, options.interval, options.chunk_size)
 
     if options.daemonize:
 
