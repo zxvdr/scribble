@@ -258,8 +258,8 @@ if __name__ == '__main__':
         '--pidfile',
         default='/var/run/scribe/scribble.pid',
         dest='pidfile',
-        help='The group ID to switch the process to on daemon start.',
-        metavar='GROUP',
+        help='The file which will contain the process ID on daemon start.',
+        metavar='PIDFILE',
     )
     options, args = parser.parse_args()
 
